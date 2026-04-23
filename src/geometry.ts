@@ -40,34 +40,54 @@ export function angleBisectorLine(a: Pt, b: Pt, c: Pt, eps = 1e-9): { p1: Pt; p2
   return { p1: a, p2: { x: a.x + dx, y: a.y + dy } };
 }
 
-// Two infinite lines each defined by two points. Returns the intersection or null.
-export function lineLineIntersect(p1: Pt, p2: Pt, p3: Pt, p4: Pt, eps = 1e-9): Pt | null {
+// Two lines each defined by two points. Returns the intersection or null.
+// When seg1/seg2 is true, the corresponding parametric t must lie in [0, 1] for the
+// result to be returned. This lets callers distinguish line-line from segment-segment.
+export function lineLineIntersect(
+  p1: Pt,
+  p2: Pt,
+  p3: Pt,
+  p4: Pt,
+  seg1 = false,
+  seg2 = false,
+  eps = 1e-9
+): Pt | null {
   const d = (p1.x - p2.x) * (p3.y - p4.y) - (p1.y - p2.y) * (p3.x - p4.x);
   if (Math.abs(d) < eps) return null;
   const t = ((p1.x - p3.x) * (p3.y - p4.y) - (p1.y - p3.y) * (p3.x - p4.x)) / d;
+  const u = -((p1.x - p2.x) * (p1.y - p3.y) - (p1.y - p2.y) * (p1.x - p3.x)) / d;
+  const tol = 1e-9;
+  if (seg1 && (t < -tol || t > 1 + tol)) return null;
+  if (seg2 && (u < -tol || u > 1 + tol)) return null;
   return { x: p1.x + t * (p2.x - p1.x), y: p1.y + t * (p2.y - p1.y) };
 }
 
-// Infinite line (through A, B) intersected with circle (centre C, radius r).
-export function lineCircleIntersect(A: Pt, B: Pt, C: Pt, r: number, eps = 1e-9): Pt[] {
+// Line (or segment, if clipT true) through A,B intersected with circle (centre C, radius r).
+export function lineCircleIntersect(A: Pt, B: Pt, C: Pt, r: number, clipT = false): Pt[] {
   const dx = B.x - A.x, dy = B.y - A.y;
   const fx = A.x - C.x, fy = A.y - C.y;
   const a = dx * dx + dy * dy;
   const b = 2 * (fx * dx + fy * dy);
   const c = fx * fx + fy * fy - r * r;
   const disc = b * b - 4 * a * c;
+  // Scale the tangent epsilon with the magnitudes involved so screen-pixel
+  // coordinates do not flip between 0/1/2 intersections from floating-point noise.
+  const eps = 1e-9 * Math.max(b * b, 4 * a * Math.abs(c), 1);
+  const tol = 1e-9;
+  const take = (t: number): boolean => !clipT || (t >= -tol && t <= 1 + tol);
+
   if (disc < -eps) return [];
-  if (disc < eps) {
+  if (Math.abs(disc) <= eps) {
     const t = -b / (2 * a);
-    return [{ x: A.x + t * dx, y: A.y + t * dy }];
+    return take(t) ? [{ x: A.x + t * dx, y: A.y + t * dy }] : [];
   }
   const s = Math.sqrt(disc);
   const t1 = (-b - s) / (2 * a);
   const t2 = (-b + s) / (2 * a);
-  return [
-    { x: A.x + t1 * dx, y: A.y + t1 * dy },
-    { x: A.x + t2 * dx, y: A.y + t2 * dy },
-  ];
+  const out: Pt[] = [];
+  if (take(t1)) out.push({ x: A.x + t1 * dx, y: A.y + t1 * dy });
+  if (take(t2)) out.push({ x: A.x + t2 * dx, y: A.y + t2 * dy });
+  return out;
 }
 
 // Two circles, returns 0, 1, or 2 intersection points.

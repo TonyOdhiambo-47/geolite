@@ -346,11 +346,11 @@ function computeIntersections(aid: string, bid: string): Pt[] {
   const A = state.objects.find((o) => o.id === aid)!;
   const B = state.objects.find((o) => o.id === bid)!;
 
-  const asLinePts = (o: GeoObj): [Pt, Pt] | null => {
+  const asLinePts = (o: GeoObj): { a: Pt; b: Pt; isSegment: boolean } | null => {
     if (o.kind === "segment" || o.kind === "line") {
       const a = getPt(state, (o as SegmentObj).a);
       const b = getPt(state, (o as SegmentObj).b);
-      if (a && b) return [a, b];
+      if (a && b) return { a, b, isSegment: o.kind === "segment" };
     }
     return null;
   };
@@ -370,11 +370,11 @@ function computeIntersections(aid: string, bid: string): Pt[] {
   const BC = asCircle(B);
 
   if (AL && BL) {
-    const p = lineLineIntersect(AL[0], AL[1], BL[0], BL[1]);
+    const p = lineLineIntersect(AL.a, AL.b, BL.a, BL.b, AL.isSegment, BL.isSegment);
     return p ? [p] : [];
   }
-  if (AL && BC) return lineCircleIntersect(AL[0], AL[1], BC.centre, BC.r);
-  if (BL && AC) return lineCircleIntersect(BL[0], BL[1], AC.centre, AC.r);
+  if (AL && BC) return lineCircleIntersect(AL.a, AL.b, BC.centre, BC.r, AL.isSegment);
+  if (BL && AC) return lineCircleIntersect(BL.a, BL.b, AC.centre, AC.r, BL.isSegment);
   if (AC && BC) return circleCircleIntersect(AC.centre, AC.r, BC.centre, BC.r);
   return [];
 }
@@ -526,11 +526,33 @@ function drawPendingHints() {
 }
 
 // ---------- input ----------
+// Track active pointers for two-finger pan + pinch (mobile).
+const activePointers = new Map<number, { x: number; y: number }>();
+let pinchStart: { dist: number; mid: Pt; vx: number; vy: number; zoom: number } | null = null;
+
+function pinchDistance(): { d: number; mid: Pt } {
+  const pts = Array.from(activePointers.values());
+  const dx = pts[0].x - pts[1].x, dy = pts[0].y - pts[1].y;
+  return {
+    d: Math.hypot(dx, dy),
+    mid: { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 },
+  };
+}
+
 function onPointerDown(e: PointerEvent) {
   canvas.setPointerCapture(e.pointerId);
   pointerDown = true;
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   const world = screenToWorld(e.clientX, e.clientY);
   mouseWorld = world;
+
+  if (activePointers.size >= 2) {
+    const { d, mid } = pinchDistance();
+    pinchStart = { dist: d, mid, vx: view.x, vy: view.y, zoom: view.zoom };
+    dragging = null;
+    panning = null;
+    return;
+  }
 
   if (e.button === 2 || e.shiftKey) {
     panning = { sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
@@ -556,8 +578,27 @@ function onPointerDown(e: PointerEvent) {
 }
 
 function onPointerMove(e: PointerEvent) {
+  if (activePointers.has(e.pointerId)) {
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  }
   const world = screenToWorld(e.clientX, e.clientY);
   mouseWorld = world;
+
+  if (pinchStart && activePointers.size >= 2) {
+    const { d, mid } = pinchDistance();
+    const zoomFactor = d / pinchStart.dist;
+    const newZoom = Math.min(5, Math.max(0.2, pinchStart.zoom * zoomFactor));
+    const rect = canvas.getBoundingClientRect();
+    const cx = mid.x - rect.left;
+    const cy = mid.y - rect.top;
+    const dx = (mid.x - pinchStart.mid.x) / pinchStart.zoom;
+    const dy = (mid.y - pinchStart.mid.y) / pinchStart.zoom;
+    view.x = pinchStart.vx - dx + cx / pinchStart.zoom - cx / newZoom;
+    view.y = pinchStart.vy - dy + cy / pinchStart.zoom - cy / newZoom;
+    view.zoom = newZoom;
+    render();
+    return;
+  }
 
   if (panning) {
     const dx = (e.clientX - panning.sx) / view.zoom;
@@ -595,6 +636,8 @@ function onPointerMove(e: PointerEvent) {
 
 function onPointerUp(e: PointerEvent) {
   canvas.releasePointerCapture(e.pointerId);
+  activePointers.delete(e.pointerId);
+  if (activePointers.size < 2) pinchStart = null;
   pointerDown = false;
   panning = null;
   dragging = null;
@@ -863,11 +906,12 @@ function wire() {
 function init() {
   wire();
   resizeCanvas();
-  // Start with a subtle default: load the equilateral template after a short beat
+  // Start with a subtle default: load the equilateral template after a short beat.
+  // Keep the blank state as the first history entry so first-load undo actually works.
   setTimeout(() => {
     if (state.objects.length === 0) {
+      history = [cloneState(state)];
       state = TEMPLATES[0].build();
-      history = [];
       future = [];
       render();
       updateHud();
